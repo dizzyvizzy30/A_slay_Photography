@@ -95,7 +95,19 @@ app.post('/api/camera-settings', async (req: Request, res: Response) => {
 
 // Start server - Listen on all network interfaces (0.0.0.0)
 app.listen(PORT, '0.0.0.0', () => {
+  // Get the actual network IP
+  const networkInterfaces = require('os').networkInterfaces();
+  const addresses = [];
+  for (const name of Object.keys(networkInterfaces)) {
+    for (const net of networkInterfaces[name]) {
+      if (net.family === 'IPv4' && !net.internal) {
+        addresses.push(net.address);
+      }
+    }
+  }
+  const localIP = addresses[0] || '192.168.0.97';
+
   console.log(`✅ Server running on http://localhost:${PORT}`);
-  console.log(`📡 Network access: http://192.168.0.97:${PORT}/api`);
+  console.log(`📡 Network access: http://${localIP}:${PORT}/api`);
   console.log(`🔑 API Key loaded: ${process.env.ANTHROPIC_API_KEY ? 'Yes' : 'No - CHECK .env FILE!'}`);
 });

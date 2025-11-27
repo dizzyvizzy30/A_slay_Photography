@@ -1,8 +1,8 @@
 import axios from 'axios';
 
+// Local network connection (firewall must allow port 8080 or be turned off)
 // Replace with your computer's IP address when testing on physical device
-// Use 'localhost' when testing in web browser or simulator
-const BASE_URL = 'http://192.168.0.97:3000/api';
+const BASE_URL = 'http://192.168.0.97:8080/api';
 
 export interface AnalyzePhotoRequest {
   image: any; // Will be FormData
@@ -45,12 +45,27 @@ export const analyzePhoto = async (imageUri: string, prompt: string): Promise<Ap
       headers: {
         'Content-Type': 'multipart/form-data',
       },
-      timeout: 30000, // 30 second timeout
+      timeout: 60000, // 60 second timeout
     });
 
     return response.data;
   } catch (error: any) {
     console.error('Error analyzing photo:', error);
+
+    // Better error messages
+    if (error.code === 'ECONNABORTED') {
+      return {
+        success: false,
+        error: 'Request timeout. Check if backend is running and accessible on your network.',
+      };
+    }
+    if (error.code === 'ERR_NETWORK' || error.message.includes('Network Error')) {
+      return {
+        success: false,
+        error: `Cannot reach backend at ${BASE_URL}. Make sure:\n1. Backend is running\n2. Phone and computer on same Wi-Fi\n3. Firewall allows port 3000`,
+      };
+    }
+
     return {
       success: false,
       error: error.response?.data?.error || error.message || 'Failed to analyze photo',
@@ -70,12 +85,27 @@ export const getCameraSettings = async (
       lighting,
       subject,
     }, {
-      timeout: 30000,
+      timeout: 60000, // 60 second timeout
     });
 
     return response.data;
   } catch (error: any) {
     console.error('Error getting camera settings:', error);
+
+    // Better error messages
+    if (error.code === 'ECONNABORTED') {
+      return {
+        success: false,
+        error: 'Request timeout. Check if backend is running and accessible on your network.',
+      };
+    }
+    if (error.code === 'ERR_NETWORK' || error.message.includes('Network Error')) {
+      return {
+        success: false,
+        error: `Cannot reach backend at ${BASE_URL}. Make sure:\n1. Backend is running\n2. Phone and computer on same Wi-Fi\n3. Firewall allows port 3000`,
+      };
+    }
+
     return {
       success: false,
       error: error.response?.data?.error || error.message || 'Failed to get camera settings',
