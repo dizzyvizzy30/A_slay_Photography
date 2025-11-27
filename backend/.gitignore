@@ -6,4 +6,4 @@ uploads/*.jpeg
 uploads/*.png
 *.log
 .DS_Store
-.env
+.env.example
