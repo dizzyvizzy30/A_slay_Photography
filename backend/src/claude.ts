@@ -28,7 +28,19 @@ export async function analyzePhoto(imagePath: string, userPrompt: string): Promi
           },
           {
             type: 'text',
-            text: `As a professional photography coach, ${userPrompt}`
+            text: `As a professional photography coach, analyze this environment/setup photo and recommend ideal camera settings for shooting in this location.
+
+User's request: ${userPrompt}
+
+Based on the lighting, environment, and conditions you see in this image, provide:
+1. Recommended ISO range
+2. Recommended aperture (f-stop)
+3. Recommended shutter speed
+4. Focus mode suggestions
+5. White balance recommendations
+6. Any additional tips for shooting in this environment
+
+Focus on what settings to USE, not on analyzing the photo quality itself.`
           }
         ]
       }]

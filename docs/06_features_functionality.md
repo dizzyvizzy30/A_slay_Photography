@@ -14,7 +14,7 @@ The MVP focuses on core AI-powered photography assistance features. Pick **2-3 f
 
 ### Feature 1: Setup Analyzer
 
-**Description**: Upload a photo of your event setup or location, and get AI recommendations on lighting, composition, and shooting conditions.
+**Description**: Upload a photo of your event setup or location, and get AI recommendations on ideal camera settings to get perfect future pictures in the same setting
 
 #### Use Cases
 
