@@ -7,7 +7,7 @@ import { analyzePhoto, getCameraSettings } from './claude';
 import { AnalyzeRequest, AnalyzeResponse } from './types';
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = parseInt(process.env.PORT || '3000', 10);
 
 // Middleware
 app.use(cors());
@@ -93,9 +93,9 @@ app.post('/api/camera-settings', async (req: Request, res: Response) => {
   }
 });
 
-// Start server
-app.listen(PORT, () => {
+// Start server - Listen on all network interfaces (0.0.0.0)
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ Server running on http://localhost:${PORT}`);
-  console.log(`📡 API available at http://localhost:${PORT}/api`);
+  console.log(`📡 Network access: http://192.168.0.97:${PORT}/api`);
   console.log(`🔑 API Key loaded: ${process.env.ANTHROPIC_API_KEY ? 'Yes' : 'No - CHECK .env FILE!'}`);
 });
