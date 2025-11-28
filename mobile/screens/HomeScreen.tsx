@@ -46,21 +46,32 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
 
   // Set up Voice recognition handlers
   useEffect(() => {
-    Voice.onSpeechStart = () => setIsRecording(true);
-    Voice.onSpeechEnd = () => setIsRecording(false);
-    Voice.onSpeechResults = (e) => {
-      if (e.value && e.value[0]) {
-        setPrompt(e.value[0]);
+    try {
+      if (Voice) {
+        Voice.onSpeechStart = () => setIsRecording(true);
+        Voice.onSpeechEnd = () => setIsRecording(false);
+        Voice.onSpeechResults = (e) => {
+          if (e.value && e.value[0]) {
+            setPrompt(e.value[0]);
+          }
+        };
+        Voice.onSpeechError = (e) => {
+          console.error('Speech error:', e);
+          setIsRecording(false);
+        };
       }
-    };
-    Voice.onSpeechError = (e) => {
-      console.error('Speech error:', e);
-      setIsRecording(false);
-      Alert.alert('Voice Error', 'Failed to recognize speech. Please try again.');
-    };
+    } catch (error) {
+      console.log('Voice recognition not available in Expo Go');
+    }
 
     return () => {
-      Voice.destroy().then(Voice.removeAllListeners);
+      try {
+        if (Voice && Voice.destroy) {
+          Voice.destroy().then(Voice.removeAllListeners).catch(() => {});
+        }
+      } catch (error) {
+        // Ignore cleanup errors
+      }
     };
   }, []);
 
@@ -200,7 +211,16 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
 
   const handleVoiceInput = async () => {
     try {
-      // Check if Voice is available
+      // Check if Voice module exists (not available in Expo Go)
+      if (!Voice || !Voice.isAvailable) {
+        Alert.alert(
+          'Voice Input Not Available',
+          'Voice recognition is not available in Expo Go. Please type your question instead, or build the app as a standalone to use voice input.'
+        );
+        return;
+      }
+
+      // Check if Voice is available on device
       const isAvailable = await Voice.isAvailable();
       if (!isAvailable) {
         Alert.alert(
@@ -222,7 +242,7 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
       console.error('Voice input error:', error);
 
       // Provide helpful error messages
-      let errorMessage = 'Failed to start voice input.';
+      let errorMessage = 'Voice recognition is not available in Expo Go. Please type your question instead.';
       if (error.message?.includes('permission')) {
         errorMessage = 'Microphone permission denied. Please enable microphone access in your device settings.';
       } else if (error.message?.includes('not available')) {
