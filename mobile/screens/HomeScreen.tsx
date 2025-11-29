@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -12,16 +12,32 @@ import {
   KeyboardAvoidingView,
   Platform,
   Modal,
+  SafeAreaView,
 } from 'react-native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { useFocusEffect } from '@react-navigation/native';
 import * as ImagePicker from 'expo-image-picker';
 import Markdown from 'react-native-markdown-display';
 import Voice from '@react-native-voice/voice';
 import { sendPrompt } from '../api';
+import { Session, Message, SessionMetadata } from '../types/session';
+import {
+  getCurrentSessionId,
+  getSession,
+  saveSession,
+  createNewSession,
+  checkRateLimit,
+  generateSessionTitle,
+  generateId,
+  getAllSessionsMetadata,
+  deleteSession,
+  setCurrentSessionId,
+} from '../utils/sessionStorage';
 
 type RootStackParamList = {
   Home: undefined;
   AboutMe: undefined;
+  History: undefined;
 };
 
 type HomeScreenProps = {
@@ -29,6 +45,14 @@ type HomeScreenProps = {
 };
 
 export default function HomeScreen({ navigation }: HomeScreenProps) {
+  // Session management
+  const [currentSession, setCurrentSession] = useState<Session | null>(null);
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [allSessions, setAllSessions] = useState<SessionMetadata[]>([]);
+  const [isSessionPanelOpen, setIsSessionPanelOpen] = useState(false);
+  const mainScrollRef = useRef<ScrollView>(null);
+
+  // Existing state
   const [prompt, setPrompt] = useState('');
   const [selectedImages, setSelectedImages] = useState<string[]>([]);
   const [aiResponse, setAiResponse] = useState<string | null>(null);
@@ -74,6 +98,144 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
       }
     };
   }, []);
+
+  // Load session on mount or when returning from History
+  useFocusEffect(
+    React.useCallback(() => {
+      loadCurrentSession();
+    }, [])
+  );
+
+  // Auto-scroll when messages change
+  useEffect(() => {
+    if (messages.length > 0) {
+      setTimeout(() => {
+        mainScrollRef.current?.scrollToEnd({ animated: true });
+      }, 100);
+    }
+  }, [messages]);
+
+  const loadCurrentSession = async () => {
+    try {
+      const sessionId = await getCurrentSessionId();
+      let session: Session | null = null;
+
+      if (sessionId) {
+        session = await getSession(sessionId);
+      }
+
+      if (!session) {
+        // Create new session if none exists
+        session = await createNewSession('New Session');
+      }
+
+      setCurrentSession(session);
+      setMessages(session.messages);
+
+      // Load all sessions for sidebar
+      await loadAllSessions();
+
+      // Scroll to bottom when messages load
+      setTimeout(() => {
+        mainScrollRef.current?.scrollToEnd({ animated: true });
+      }, 100);
+    } catch (error) {
+      console.error('Error loading session:', error);
+      Alert.alert('Error', 'Failed to load session');
+    }
+  };
+
+  const loadAllSessions = async () => {
+    try {
+      const sessions = await getAllSessionsMetadata();
+      setAllSessions(sessions);
+    } catch (error) {
+      console.error('Error loading sessions:', error);
+    }
+  };
+
+  const handleSwitchSession = async (sessionId: string) => {
+    try {
+      const session = await getSession(sessionId);
+      if (session) {
+        await setCurrentSessionId(sessionId);
+        setCurrentSession(session);
+        setMessages(session.messages);
+        setIsSessionPanelOpen(false);
+
+        // Clear current inputs
+        setPrompt('');
+        setSelectedImages([]);
+        setAiResponse(null);
+
+        // Scroll to bottom
+        setTimeout(() => {
+          mainScrollRef.current?.scrollToEnd({ animated: true });
+        }, 100);
+      }
+    } catch (error) {
+      Alert.alert('Error', 'Failed to switch session');
+    }
+  };
+
+  const handleDeleteSession = async (sessionId: string, title: string) => {
+    Alert.alert(
+      'Delete Session',
+      `Delete "${title}"?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await deleteSession(sessionId);
+              await loadAllSessions();
+
+              // If deleted current session, create new one
+              if (currentSession?.id === sessionId) {
+                const newSession = await createNewSession('New Session');
+                setCurrentSession(newSession);
+                setMessages([]);
+                setPrompt('');
+                setSelectedImages([]);
+                setAiResponse(null);
+              }
+            } catch (error) {
+              Alert.alert('Error', 'Failed to delete session');
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  //  New Session button handler
+  const handleNewSession = async () => {
+    Alert.alert(
+      'New Session',
+      'Start a new conversation? Current session will be saved.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Start New',
+          onPress: async () => {
+            try {
+              const newSession = await createNewSession('New Session');
+              setCurrentSession(newSession);
+              setMessages([]);
+              setPrompt('');
+              setSelectedImages([]);
+              setAiResponse(null);
+              await loadAllSessions();  // Refresh sessions list
+            } catch (error) {
+              Alert.alert('Error', 'Failed to create new session');
+            }
+          },
+        },
+      ]
+    );
+  };
 
   // Camera and Lens options
   const cameraOptions = [
@@ -144,6 +306,12 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
   };
 
   const pickImage = async () => {
+    // Check if already at max limit
+    if (selectedImages.length >= 3) {
+      Alert.alert('Image Limit', 'Maximum 3 images allowed. Please remove an image before adding more.');
+      return;
+    }
+
     const permissionResult = await ImagePicker.requestMediaLibraryPermissionsAsync();
 
     if (!permissionResult.granted) {
@@ -159,7 +327,15 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
 
     if (!result.canceled && result.assets) {
       const imageUris = result.assets.map(asset => asset.uri);
-      setSelectedImages([...selectedImages, ...imageUris]);
+      const combinedImages = [...selectedImages, ...imageUris];
+
+      // Limit to 3 images total
+      if (combinedImages.length > 3) {
+        setSelectedImages(combinedImages.slice(0, 3));
+        Alert.alert('Image Limit', 'Only the first 3 images were added. Maximum 3 images allowed.');
+      } else {
+        setSelectedImages(combinedImages);
+      }
     }
   };
 
@@ -173,28 +349,110 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
       return;
     }
 
+    if (!currentSession) {
+      Alert.alert('Error', 'No active session. Please try again.');
+      return;
+    }
+
+    // Check rate limiting
+    const rateCheck = checkRateLimit(currentSession);
+    if (!rateCheck.allowed) {
+      const resetDate = new Date(rateCheck.resetTime!);
+      const hoursLeft = Math.ceil((rateCheck.resetTime! - Date.now()) / (1000 * 60 * 60));
+      Alert.alert(
+        'Rate Limit Reached',
+        `You've reached the limit of 15 prompts per 5-hour window.\nLimit resets in ${hoursLeft} hour(s) at ${resetDate.toLocaleTimeString()}.`,
+      );
+      return;
+    }
+
     setIsLoading(true);
     setAiResponse(null);
     setShotSuggestions([]);
     setCurrentShotPage(0);
 
+    const userMessageId = generateId();
+    const aiMessageId = generateId();
+    const now = Date.now();
+
+    // Create user message
+    const userMessage: Message = {
+      id: userMessageId,
+      type: 'user',
+      timestamp: now,
+      text: prompt || '(Uploaded images without text)',
+      images: selectedImages.length > 0 ? [...selectedImages] : undefined,
+    };
+
+    // Add user message to UI immediately
+    const updatedMessages = [...messages, userMessage];
+    setMessages(updatedMessages);
+
+    // Scroll to bottom
+    setTimeout(() => {
+      mainScrollRef.current?.scrollToEnd({ animated: true });
+    }, 100);
+
     try {
-      // For now, use first image. Backend can be updated later for multiple images
+      // Send all selected images (up to 3)
       const response = await sendPrompt(
         prompt || 'Analyze this environment and recommend camera settings',
-        selectedImages[0] || undefined
+        selectedImages.length > 0 ? selectedImages : undefined
       );
 
       if (response.success && response.data) {
         setAiResponse(response.data);
+
+        // Create AI message
+        const aiMessage: Message = {
+          id: aiMessageId,
+          type: 'ai',
+          timestamp: Date.now(),
+          text: response.data,
+          isExpanded: false,
+        };
+
+        // Add AI message
+        const finalMessages = [...updatedMessages, aiMessage];
+        setMessages(finalMessages);
+
         // Extract shot suggestions
         const shots = extractShotSuggestions(response.data);
         setShotSuggestions(shots);
+
+        // Update session
+        const updatedSession: Session = {
+          ...currentSession,
+          title: currentSession.messages.length === 0
+            ? generateSessionTitle(prompt, selectedImages)
+            : currentSession.title,
+          messages: finalMessages,
+          lastActivityAt: Date.now(),
+          promptCount: currentSession.promptCount + 1,
+          firstPromptInWindow: currentSession.firstPromptInWindow || now,
+        };
+
+        await saveSession(updatedSession);
+        setCurrentSession(updatedSession);
+        await loadAllSessions(); // Refresh sessions list
+
+        // Clear inputs
+        setPrompt('');
+        setSelectedImages([]);
+
+        // Scroll to bottom
+        setTimeout(() => {
+          mainScrollRef.current?.scrollToEnd({ animated: true });
+        }, 100);
       } else {
         Alert.alert('Error', response.error || 'Failed to get AI response');
+        // Remove user message if AI response failed
+        setMessages(messages);
       }
     } catch (error: any) {
       Alert.alert('Error', error.message || 'Something went wrong');
+      // Remove user message if request failed
+      setMessages(messages);
     } finally {
       setIsLoading(false);
     }
@@ -257,18 +515,24 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
   };
 
   return (
-    <KeyboardAvoidingView
-      style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-    >
-      <ScrollView
-        style={styles.scrollView}
-        contentContainerStyle={styles.scrollContent}
-        keyboardShouldPersistTaps="handled"
-      >
-        {/* Header */}
-        <View style={styles.header}>
-          <Text style={styles.logo}>🤖📸</Text>
+    <SafeAreaView style={styles.container}>
+      {/* Header */}
+      <View style={styles.header}>
+          <TouchableOpacity
+            style={styles.sessionPanelButton}
+            onPress={() => setIsSessionPanelOpen(true)}
+          >
+            <Image
+              source={require('../assets/chat-session-icon.png')}
+              style={styles.sessionPanelIconImage}
+              resizeMode="contain"
+            />
+          </TouchableOpacity>
+          <Image
+            source={require('../assets/logo.png')}
+            style={styles.logoImage}
+            resizeMode="contain"
+          />
           <Text style={styles.appTitle}>AI Photography Coach</Text>
           <TouchableOpacity
             style={styles.menuButton}
@@ -342,6 +606,129 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
                 </TouchableOpacity>
               </ScrollView>
             </View>
+          </View>
+        </Modal>
+
+        {/* Session Panel Modal (Left Side) */}
+        <Modal
+          visible={isSessionPanelOpen}
+          animationType="slide"
+          transparent={true}
+          onRequestClose={() => setIsSessionPanelOpen(false)}
+        >
+          <View style={styles.sessionPanelOverlay}>
+            <View style={styles.sessionPanelContainer}>
+              {/* Panel Header */}
+              <View style={styles.sessionPanelHeader}>
+                <View style={styles.sessionPanelTitleContainer}>
+                  <Image
+                    source={require('../assets/chat-session-icon.png')}
+                    style={styles.sessionPanelTitleIcon}
+                    resizeMode="contain"
+                  />
+                  <Text style={styles.sessionPanelTitle}>Chat Sessions</Text>
+                </View>
+                <TouchableOpacity onPress={() => setIsSessionPanelOpen(false)}>
+                  <Text style={styles.closeButton}>✕</Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* Session Count Info */}
+              <View style={styles.sessionCountInfo}>
+                <Text style={styles.sessionCountText}>
+                  {allSessions.length} / 5 Sessions
+                </Text>
+              </View>
+
+              {/* Sessions List */}
+              <ScrollView style={styles.sessionsList}>
+                {allSessions.length === 0 ? (
+                  <View style={styles.emptySessionsState}>
+                    <Text style={styles.emptySessionsIcon}>📭</Text>
+                    <Text style={styles.emptySessionsText}>No sessions yet</Text>
+                  </View>
+                ) : (
+                  allSessions.map((session) => (
+                    <TouchableOpacity
+                      key={session.id}
+                      style={[
+                        styles.sessionPanelItem,
+                        currentSession?.id === session.id && styles.sessionPanelItemActive,
+                      ]}
+                      onPress={() => handleSwitchSession(session.id)}
+                    >
+                      <View style={styles.sessionItemContent}>
+                        <View style={styles.sessionItemHeader}>
+                          <Text style={styles.sessionItemIcon}>
+                            {currentSession?.id === session.id ? '💬' : '💭'}
+                          </Text>
+                          <Text
+                            style={[
+                              styles.sessionItemTitle,
+                              currentSession?.id === session.id && styles.sessionItemTitleActive,
+                            ]}
+                            numberOfLines={2}
+                          >
+                            {session.title}
+                          </Text>
+                        </View>
+                        <View style={styles.sessionItemMeta}>
+                          <Text style={styles.sessionItemMetaText}>
+                            {session.messageCount} {session.messageCount === 1 ? 'msg' : 'msgs'}
+                          </Text>
+                          <Text style={styles.sessionItemMetaDot}>•</Text>
+                          <Text style={styles.sessionItemMetaText}>
+                            {session.promptCount}/15
+                          </Text>
+                        </View>
+                      </View>
+                      {currentSession?.id !== session.id && (
+                        <TouchableOpacity
+                          style={styles.deleteSessionButton}
+                          onPress={() => handleDeleteSession(session.id, session.title)}
+                        >
+                          <Text style={styles.deleteSessionText}>🗑️</Text>
+                        </TouchableOpacity>
+                      )}
+                    </TouchableOpacity>
+                  ))
+                )}
+              </ScrollView>
+
+              {/* New Session Button */}
+              <TouchableOpacity
+                style={styles.newSessionButton}
+                onPress={() => {
+                  setIsSessionPanelOpen(false);
+                  handleNewSession();
+                }}
+              >
+                <Image
+                  source={require('../assets/new-chat-icon.png')}
+                  style={styles.newSessionButtonIconImage}
+                  resizeMode="contain"
+                />
+                <Text style={styles.newSessionButtonText}>New Session</Text>
+              </TouchableOpacity>
+
+              {/* History Button */}
+              <TouchableOpacity
+                style={styles.historyButton}
+                onPress={() => {
+                  setIsSessionPanelOpen(false);
+                  navigation.navigate('History');
+                }}
+              >
+                <Text style={styles.historyButtonIcon}>📚</Text>
+                <Text style={styles.historyButtonText}>View All History</Text>
+              </TouchableOpacity>
+            </View>
+            {/* Tap outside to close */}
+            <TouchableOpacity
+              style={styles.sessionPanelBackdrop}
+              activeOpacity={1}
+              onPress={() => setIsSessionPanelOpen(false)}
+            />
           </View>
         </Modal>
 
@@ -440,8 +827,63 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
           </View>
         </Modal>
 
-        {/* Main Content */}
-        <View style={styles.mainContent}>
+        <KeyboardAvoidingView
+          style={styles.keyboardAvoidingContainer}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={0}
+        >
+          {/* Scrollable Content Area */}
+          <ScrollView
+            ref={mainScrollRef}
+            style={styles.scrollableContent}
+            contentContainerStyle={styles.scrollableContentContainer}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={true}
+          >
+          {/* Messages Thread */}
+          {messages.length > 0 && (
+            <View style={styles.messagesThreadContainer}>
+              {messages.map((message) => (
+                <View
+                  key={message.id}
+                  style={[
+                    styles.messageBubble,
+                    message.type === 'user' ? styles.userMessage : styles.aiMessage,
+                  ]}
+                >
+                  {message.type === 'user' ? (
+                    <>
+                      {message.images && message.images.length > 0 && (
+                        <ScrollView
+                          horizontal
+                          style={styles.messageImages}
+                          showsHorizontalScrollIndicator={false}
+                        >
+                          {message.images.map((uri, idx) => (
+                            <Image
+                              key={idx}
+                              source={{ uri }}
+                              style={styles.messageImage}
+                            />
+                          ))}
+                        </ScrollView>
+                      )}
+                      <Text style={styles.userMessageText}>{message.text}</Text>
+                    </>
+                  ) : (
+                    <Markdown style={markdownStyles}>{message.text}</Markdown>
+                  )}
+                  <Text style={styles.messageTime}>
+                    {new Date(message.timestamp).toLocaleTimeString()}
+                  </Text>
+                </View>
+              ))}
+            </View>
+          )}
+          </ScrollView>
+
+          {/* Fixed Input Area at Bottom */}
+          <View style={styles.fixedInputArea}>
           {/* Hint Text */}
           <Text style={styles.hintText}>
             Try: "outdoor portrait", "low light concert", or upload a scene photo
@@ -487,15 +929,22 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
               <Text style={styles.cameraButtonText}>📷</Text>
             </TouchableOpacity>
 
-            <TextInput
-              style={[styles.compactPromptInput, isRecording && styles.recordingInput]}
-              placeholder={isRecording ? "Listening..." : "How can I coach you today?"}
-              placeholderTextColor={isRecording ? "#ff4444" : "#999999"}
-              multiline
-              value={prompt}
-              onChangeText={setPrompt}
-              editable={!isRecording}
-            />
+            <View style={styles.inputWithCounter}>
+              <TextInput
+                style={[styles.compactPromptInput, isRecording && styles.recordingInput]}
+                placeholder={isRecording ? "Listening..." : "How can I coach you today?"}
+                placeholderTextColor={isRecording ? "#ff4444" : "#999999"}
+                multiline
+                value={prompt}
+                onChangeText={setPrompt}
+                editable={!isRecording}
+              />
+              {currentSession && (
+                <Text style={styles.promptCounter}>
+                  {currentSession.promptCount}/15
+                </Text>
+              )}
+            </View>
 
             <TouchableOpacity
               style={[styles.compactSendButton, isLoading && styles.sendButtonDisabled]}
@@ -617,9 +1066,9 @@ export default function HomeScreen({ navigation }: HomeScreenProps) {
               )}
             </View>
           )}
-        </View>
-      </ScrollView>
-    </KeyboardAvoidingView>
+          </View>
+        </KeyboardAvoidingView>
+    </SafeAreaView>
   );
 }
 
@@ -628,23 +1077,39 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#ffffff',
   },
-  scrollView: {
+  keyboardAvoidingContainer: {
     flex: 1,
   },
-  scrollContent: {
+  scrollableContent: {
+    flex: 1,
+  },
+  scrollableContentContainer: {
     flexGrow: 1,
+    paddingTop: 20,
+    paddingBottom: 20,
+  },
+  fixedInputArea: {
+    backgroundColor: '#ffffff',
+    borderTopWidth: 1,
+    borderTopColor: '#f0f0f0',
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    paddingBottom: 100,
+    marginBottom: -25,
   },
   header: {
-    paddingTop: 60,
+    paddingTop: 40,
     paddingBottom: 20,
     paddingHorizontal: 20,
     alignItems: 'center',
     borderBottomWidth: 1,
     borderBottomColor: '#f0f0f0',
+    backgroundColor: '#ffffff',
   },
-  logo: {
-    fontSize: 48,
-    marginBottom: 12,
+  logoImage: {
+    width: 60,
+    height: 60,
+    marginBottom: 8,
   },
   appTitle: {
     fontSize: 24,
@@ -654,7 +1119,7 @@ const styles = StyleSheet.create({
   },
   menuButton: {
     position: 'absolute',
-    top: 60,
+    top: 45,
     right: 20,
     padding: 8,
   },
@@ -680,6 +1145,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     padding: 20,
+    paddingTop: 50,
     borderBottomWidth: 1,
     borderBottomColor: '#f0f0f0',
   },
@@ -708,10 +1174,267 @@ const styles = StyleSheet.create({
     fontSize: 24,
     marginRight: 16,
   },
+  menuItemIconImage: {
+    width: 24,
+    height: 24,
+    marginRight: 16,
+    tintColor: '#1a1a1a',
+  },
   menuItemText: {
     fontSize: 16,
     color: '#1a1a1a',
     fontWeight: '500',
+  },
+  menuDivider: {
+    height: 1,
+    backgroundColor: '#e0e0e0',
+    marginVertical: 8,
+  },
+  sessionPanelButton: {
+    position: 'absolute',
+    top: 45,
+    left: 20,
+    padding: 8,
+    zIndex: 10,
+  },
+  sessionPanelIcon: {
+    fontSize: 28,
+    color: '#1a1a1a',
+  },
+  sessionPanelIconImage: {
+    width: 28,
+    height: 28,
+    tintColor: '#1a1a1a',
+  },
+  sessionPanelOverlay: {
+    flex: 1,
+    flexDirection: 'row',
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+  },
+  sessionPanelContainer: {
+    width: '75%',
+    backgroundColor: '#ffffff',
+    borderTopRightRadius: 20,
+    borderBottomRightRadius: 20,
+    paddingBottom: 40,
+  },
+  sessionPanelBackdrop: {
+    flex: 1,
+  },
+  sessionPanelHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: 20,
+    paddingTop: 50,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0f0f0',
+    backgroundColor: '#f9f9f9',
+  },
+  sessionPanelTitleContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  sessionPanelTitle: {
+    fontSize: 20,
+    fontWeight: '600',
+    color: '#1a1a1a',
+  },
+  sessionPanelTitleIcon: {
+    width: 24,
+    height: 24,
+    marginRight: 8,
+    tintColor: '#1a1a1a',
+  },
+  sessionCountInfo: {
+    padding: 16,
+    backgroundColor: '#f0f0f0',
+    borderBottomWidth: 1,
+    borderBottomColor: '#e0e0e0',
+  },
+  sessionCountText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#666666',
+    textAlign: 'center',
+  },
+  sessionsList: {
+    flex: 1,
+    padding: 12,
+  },
+  emptySessionsState: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 60,
+  },
+  emptySessionsIcon: {
+    fontSize: 48,
+    marginBottom: 12,
+  },
+  emptySessionsText: {
+    fontSize: 16,
+    color: '#999999',
+  },
+  sessionPanelItem: {
+    flexDirection: 'row',
+    backgroundColor: '#f9f9f9',
+    borderRadius: 12,
+    marginBottom: 10,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#e0e0e0',
+  },
+  sessionPanelItemActive: {
+    backgroundColor: '#e3f2fd',
+    borderColor: '#2196F3',
+    borderWidth: 2,
+  },
+  sessionItemContent: {
+    flex: 1,
+  },
+  sessionItemHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+  sessionItemIcon: {
+    fontSize: 20,
+    marginRight: 8,
+  },
+  sessionItemTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#1a1a1a',
+    flex: 1,
+  },
+  sessionItemTitleActive: {
+    color: '#2196F3',
+  },
+  sessionItemMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginLeft: 28,
+  },
+  sessionItemMetaText: {
+    fontSize: 12,
+    color: '#666666',
+  },
+  sessionItemMetaDot: {
+    fontSize: 12,
+    color: '#666666',
+    marginHorizontal: 6,
+  },
+  deleteSessionButton: {
+    width: 40,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  deleteSessionText: {
+    fontSize: 20,
+  },
+  newSessionButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#1a1a1a',
+    marginHorizontal: 16,
+    marginBottom: 12,
+    paddingVertical: 14,
+    borderRadius: 12,
+  },
+  newSessionButtonIcon: {
+    fontSize: 18,
+    marginRight: 8,
+    color: '#ffffff',
+  },
+  newSessionButtonIconImage: {
+    width: 18,
+    height: 18,
+    marginRight: 8,
+    tintColor: '#ffffff',
+  },
+  newSessionButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#ffffff',
+  },
+  historyButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#f5f5f5',
+    marginHorizontal: 16,
+    marginBottom: 12,
+    paddingVertical: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#e0e0e0',
+  },
+  historyButtonIcon: {
+    fontSize: 18,
+    marginRight: 8,
+  },
+  historyButtonText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#1a1a1a',
+  },
+  sessionInfo: {
+    backgroundColor: '#f0f0f0',
+    borderRadius: 8,
+    padding: 12,
+    marginHorizontal: 20,
+    marginTop: 16,
+    marginBottom: 16,
+  },
+  sessionTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#1a1a1a',
+    marginBottom: 4,
+  },
+  sessionMeta: {
+    fontSize: 12,
+    color: '#666666',
+  },
+  messagesThreadContainer: {
+    paddingHorizontal: 20,
+    paddingVertical: 8,
+  },
+  messageBubble: {
+    marginBottom: 16,
+    borderRadius: 16,
+    padding: 14,
+  },
+  userMessage: {
+    backgroundColor: '#e3f2fd',
+    alignSelf: 'flex-end',
+    maxWidth: '85%',
+  },
+  aiMessage: {
+    backgroundColor: '#f5f5f5',
+    alignSelf: 'flex-start',
+    maxWidth: '100%',
+  },
+  userMessageText: {
+    fontSize: 14,
+    color: '#1a1a1a',
+  },
+  messageImages: {
+    marginBottom: 8,
+  },
+  messageImage: {
+    width: 60,
+    height: 60,
+    borderRadius: 8,
+    marginRight: 8,
+  },
+  messageTime: {
+    fontSize: 10,
+    color: '#999999',
+    marginTop: 6,
+    textAlign: 'right',
   },
   selectorsContainer: {
     flexDirection: 'row',
@@ -720,6 +1443,7 @@ const styles = StyleSheet.create({
     gap: 12,
     borderBottomWidth: 1,
     borderBottomColor: '#f0f0f0',
+    backgroundColor: '#ffffff',
   },
   selectorButton: {
     flex: 1,
@@ -757,6 +1481,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     padding: 20,
+    paddingTop: 50,
     borderBottomWidth: 1,
     borderBottomColor: '#f0f0f0',
   },
@@ -783,12 +1508,6 @@ const styles = StyleSheet.create({
     color: '#007AFF',
     fontWeight: '600',
   },
-  mainContent: {
-    flex: 1,
-    padding: 20,
-    justifyContent: 'flex-end',
-    paddingBottom: 100,
-  },
   hintText: {
     fontSize: 13,
     color: '#999999',
@@ -803,10 +1522,10 @@ const styles = StyleSheet.create({
     marginVertical: 24,
   },
   centralMicButton: {
-    width: 80,
-    height: 80,
+    width: 60,
+    height: 60,
     backgroundColor: '#ffffff',
-    borderRadius: 40,
+    borderRadius: 30,
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 3,
@@ -824,7 +1543,7 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.3,
   },
   centralMicIcon: {
-    fontSize: 44,
+    fontSize: 32,
   },
   recordingText: {
     marginTop: 12,
@@ -891,6 +1610,10 @@ const styles = StyleSheet.create({
   cameraButtonText: {
     fontSize: 20,
   },
+  inputWithCounter: {
+    flex: 1,
+    position: 'relative',
+  },
   compactPromptInput: {
     flex: 1,
     fontSize: 15,
@@ -899,6 +1622,15 @@ const styles = StyleSheet.create({
     maxHeight: 80,
     paddingVertical: 8,
     paddingHorizontal: 8,
+    paddingRight: 50,
+  },
+  promptCounter: {
+    position: 'absolute',
+    right: 8,
+    top: 12,
+    fontSize: 12,
+    color: '#999999',
+    fontWeight: '500',
   },
   recordingInput: {
     borderColor: '#ff4444',

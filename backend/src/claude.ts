@@ -5,32 +5,42 @@ const client = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY!
 });
 
-export async function analyzePhoto(imagePath: string, userPrompt: string): Promise<string> {
+export async function analyzePhoto(imagePaths: string[], userPrompt: string): Promise<string> {
   try {
-    // Read image file
-    const imageBuffer = await fs.readFile(imagePath);
-    const base64Image = imageBuffer.toString('base64');
+    // Read all image files and convert to base64
+    const imageContents = await Promise.all(
+      imagePaths.map(async (imagePath) => {
+        const imageBuffer = await fs.readFile(imagePath);
+        const base64Image = imageBuffer.toString('base64');
+        return {
+          type: 'image' as const,
+          source: {
+            type: 'base64' as const,
+            media_type: 'image/jpeg' as const,
+            data: base64Image
+          }
+        };
+      })
+    );
 
-    // Call Claude API
-    const response = await client.messages.create({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 3072,
-      messages: [{
-        role: 'user',
-        content: [
-          {
-            type: 'image',
-            source: {
-              type: 'base64',
-              media_type: 'image/jpeg',
-              data: base64Image
-            }
-          },
-          {
-            type: 'text',
-            text: `As a professional photography coach, analyze this environment/setup photo and recommend ideal camera settings AND shot suggestions for shooting in this location.
+    // Build content array: images first, then text prompt
+    const content = [
+      ...imageContents,
+      {
+        type: 'text' as const,
+        text: `As a professional photography coach, analyze ${imagePaths.length > 1 ? 'these environment/setup photos' : 'this environment/setup photo'} and recommend ideal camera settings AND shot suggestions for shooting in ${imagePaths.length > 1 ? 'these locations' : 'this location'}.
 
 User's request: ${userPrompt}
+
+CRITICAL FIRST STEP: Before providing recommendations, assess if you have enough information:
+- If the user's request is too vague (e.g., just "help me" or "what settings?") or the image doesn't provide enough context, start your response with "## Need More Details" and ask 3-5 specific questions about:
+  * What type of shoot is this? (portrait, landscape, event, product, etc.)
+  * Who/what is the subject?
+  * What time of day will they be shooting?
+  * What mood or style are they going for?
+  * Any specific challenges they're concerned about?
+
+- If you have enough information (clear image + specific request), proceed with recommendations.
 
 IMPORTANT: Format your response in this EXACT structure:
 
@@ -90,9 +100,17 @@ Provide brief, practical recommendations for helpful tools:
 - **Support:** [Tripod, monopod, gimbal - if beneficial for this shoot]
 - **Other Gear:** [Remote trigger, extra batteries, lens cloth, etc. - practical items]
 
-Focus on what settings to USE and what shots to CAPTURE, not on analyzing the photo quality itself. Use markdown formatting.`
-          }
-        ]
+Focus on what settings to USE and what shots to CAPTURE, not on analyzing the photo quality itself. Use markdown formatting.${imagePaths.length > 1 ? '\n\nNote: Analyze ALL provided images together and provide comprehensive recommendations that consider all the different angles/locations shown.' : ''}`
+      }
+    ];
+
+    // Call Claude API
+    const response = await client.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 3072,
+      messages: [{
+        role: 'user',
+        content
       }]
     });
 
@@ -111,6 +129,17 @@ export async function getCameraSettings(eventType: string, lighting: string, sub
     Event Type: ${eventType}
     Lighting: ${lighting}
     Subject: ${subject}
+
+    CRITICAL FIRST STEP: Before providing recommendations, assess if you have enough information:
+    - If the event type, lighting, or subject is too vague (e.g., "general photography", "help", "anything"), start your response with "## Need More Details" and ask 3-5 specific questions about:
+      * What specific type of shoot is this? (wedding, portrait session, sports, product, etc.)
+      * What is the exact lighting condition? (direct sunlight, overcast, indoor artificial, mixed, etc.)
+      * Who/what exactly is the subject? (individual, group, moving subjects, stationary objects, etc.)
+      * What time of day?
+      * What mood or style are they going for?
+      * Any specific challenges or constraints?
+
+    - If you have enough information, proceed with recommendations.
 
     IMPORTANT: Format your response in this EXACT structure:
 

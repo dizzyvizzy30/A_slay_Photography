@@ -40,19 +40,27 @@ app.get('/api/health', (req: Request, res: Response) => {
   res.json({ status: 'ok', message: 'Server is running' });
 });
 
-app.post('/api/analyze', upload.single('image'), async (req: Request, res: Response) => {
+app.post('/api/analyze', upload.array('images', 3), async (req: Request, res: Response) => {
   try {
     const { prompt } = req.body;
-    const imagePath = req.file?.path;
+    const files = req.files as Express.Multer.File[];
 
-    if (!imagePath || !prompt) {
+    if (!files || files.length === 0) {
       return res.status(400).json({
         success: false,
-        error: 'Image and prompt are required'
+        error: 'At least one image is required'
       });
     }
 
-    const result = await analyzePhoto(imagePath, prompt);
+    if (files.length > 3) {
+      return res.status(400).json({
+        success: false,
+        error: 'Maximum 3 images allowed'
+      });
+    }
+
+    const imagePaths = files.map(file => file.path);
+    const result = await analyzePhoto(imagePaths, prompt || 'Analyze these images and recommend camera settings');
 
     res.json({
       success: true,

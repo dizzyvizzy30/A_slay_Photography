@@ -2,7 +2,7 @@ import axios from 'axios';
 
 // Local network connection (firewall must allow port 8080 or be turned off)
 // Replace with your computer's IP address when testing on physical device
-const BASE_URL = 'http://192.168.0.97:8080/api';
+const BASE_URL = 'http://10.0.0.179:8080/api';
 
 export interface AnalyzePhotoRequest {
   image: any; // Will be FormData
@@ -21,22 +21,28 @@ export interface ApiResponse {
   error?: string;
 }
 
-// Analyze photo with AI (uploads image)
-export const analyzePhoto = async (imageUri: string, prompt: string): Promise<ApiResponse> => {
+// Analyze photo with AI (uploads up to 3 images)
+export const analyzePhoto = async (imageUris: string[], prompt: string): Promise<ApiResponse> => {
   try {
+    // Limit to 3 images
+    const imagesToSend = imageUris.slice(0, 3);
+
     const formData = new FormData();
 
-    // Extract filename from URI
-    const filename = imageUri.split('/').pop() || 'photo.jpg';
-    const match = /\.(\w+)$/.exec(filename);
-    const type = match ? `image/${match[1]}` : 'image/jpeg';
+    // Append all images
+    imagesToSend.forEach((imageUri, index) => {
+      // Extract filename from URI
+      const filename = imageUri.split('/').pop() || `photo${index + 1}.jpg`;
+      const match = /\.(\w+)$/.exec(filename);
+      const type = match ? `image/${match[1]}` : 'image/jpeg';
 
-    // Append image file
-    formData.append('image', {
-      uri: imageUri,
-      name: filename,
-      type,
-    } as any);
+      // Append image file
+      formData.append('images', {
+        uri: imageUri,
+        name: filename,
+        type,
+      } as any);
+    });
 
     // Append prompt
     formData.append('prompt', prompt);
@@ -62,7 +68,7 @@ export const analyzePhoto = async (imageUri: string, prompt: string): Promise<Ap
     if (error.code === 'ERR_NETWORK' || error.message.includes('Network Error')) {
       return {
         success: false,
-        error: `Cannot reach backend at ${BASE_URL}. Make sure:\n1. Backend is running\n2. Phone and computer on same Wi-Fi\n3. Firewall allows port 3000`,
+        error: `Cannot reach backend at ${BASE_URL}. Make sure:\n1. Backend is running\n2. Phone and computer on same Wi-Fi\n3. Firewall allows port 8080`,
       };
     }
 
@@ -102,7 +108,7 @@ export const getCameraSettings = async (
     if (error.code === 'ERR_NETWORK' || error.message.includes('Network Error')) {
       return {
         success: false,
-        error: `Cannot reach backend at ${BASE_URL}. Make sure:\n1. Backend is running\n2. Phone and computer on same Wi-Fi\n3. Firewall allows port 3000`,
+        error: `Cannot reach backend at ${BASE_URL}. Make sure:\n1. Backend is running\n2. Phone and computer on same Wi-Fi\n3. Firewall allows port 8080`,
       };
     }
 
@@ -113,13 +119,13 @@ export const getCameraSettings = async (
   }
 };
 
-// Simple AI prompt - accepts text input and optional image
-export const sendPrompt = async (text: string, imageUri?: string): Promise<ApiResponse> => {
-  if (imageUri) {
-    // If image is provided, use analyze endpoint
-    return analyzePhoto(imageUri, text);
+// Simple AI prompt - accepts text input and optional images (up to 3)
+export const sendPrompt = async (text: string, imageUris?: string[]): Promise<ApiResponse> => {
+  if (imageUris && imageUris.length > 0) {
+    // If images are provided, use analyze endpoint
+    return analyzePhoto(imageUris, text);
   } else {
-    // If no image, extract event info from text and use camera-settings endpoint
+    // If no images, extract event info from text and use camera-settings endpoint
     // For now, we'll use generic values - you can improve this parsing later
     return getCameraSettings(
       text || 'general photography',
